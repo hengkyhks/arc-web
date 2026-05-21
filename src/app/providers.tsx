@@ -57,7 +57,7 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider theme={darkTheme()} coolMode>
+        <RainbowKitProvider theme={darkTheme()} coolMode modalSize="compact">
           {children}
         </RainbowKitProvider>
       </QueryClientProvider>
