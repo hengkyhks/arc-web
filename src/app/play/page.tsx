@@ -5,247 +5,206 @@ import Link from 'next/link';
 import { Coins, Trophy, Clock, Play, RotateCcw, Wallet } from 'lucide-react';
 
 const GAME_DURATION = 60;
-const GLASS_WIDTH = 80;
-const GLASS_HEIGHT = 50;
+const GLASS_W = 80;
+const GLASS_H = 50;
 const STACK_TOLERANCE = 30;
 
-interface Glass {
-  x: number;
-  y: number;
-}
+interface Glass { x: number; y: number; }
 
-interface GameState {
-  glasses: Glass[];
-  activeGlass: Glass | null;
-  score: number;
-  timeLeft: number;
-  currentX: number;
-  direction: number;
-}
-
-const CANVAS_WIDTH = 400;
-const CANVAS_HEIGHT = 600;
+const W = 400;
+const H = 600;
 const PLATFORM_Y = 550;
 const PLATFORM_SPEED = 3;
-const GLASS_DROP_SPEED = 10;
+const DROP_SPEED = 10;
 
 export default function PlayPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [displayScore, setDisplayScore] = useState(0);
   const [displayTime, setDisplayTime] = useState(GAME_DURATION);
   const [gameStatus, setGameStatus] = useState<'idle' | 'playing' | 'gameover'>('idle');
-  const animationRef = useRef<number>(0);
-  const lastTimeRef = useRef<number>(0);
-  const gameStateRef = useRef<GameState>({
-    glasses: [],
-    activeGlass: null,
+
+  // Game state in ref to avoid closure issues
+  const state = useRef({
+    glasses: [] as Glass[],
+    activeGlass: null as Glass | null,
     score: 0,
     timeLeft: GAME_DURATION,
-    currentX: CANVAS_WIDTH / 2,
+    currentX: W / 2,
     direction: 1,
   });
-  const canDropRef = useRef(true);
 
-  const resetGame = useCallback(() => {
-    const state = gameStateRef.current;
-    state.glasses = [];
-    state.activeGlass = null;
-    state.score = 0;
-    state.timeLeft = GAME_DURATION;
-    state.currentX = CANVAS_WIDTH / 2;
-    state.direction = 1;
-    setDisplayScore(0);
-    setDisplayTime(GAME_DURATION);
-  }, []);
-
-  const startGame = useCallback(() => {
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-    }
-
-    resetGame();
-    const state = gameStateRef.current;
-    state.glasses = [];
-    state.activeGlass = null;
-    state.score = 0;
-    state.timeLeft = GAME_DURATION;
-    state.currentX = CANVAS_WIDTH / 2;
-    state.direction = 1;
-
-    setDisplayScore(0);
-    setDisplayTime(GAME_DURATION);
-    setGameStatus('playing');
-    lastTimeRef.current = Date.now();
-
-    requestAnimationFrame(gameLoop);
-  }, [resetGame]);
+  const canDrop = useRef(true);
+  const rafId = useRef<number>(0);
+  const lastTime = useRef(Date.now());
+  const isPlaying = useRef(false);
 
   const drawGlass = useCallback((ctx: CanvasRenderingContext2D, x: number, y: number) => {
-    const w = GLASS_WIDTH;
-    const h = GLASS_HEIGHT;
-
-    // Glass body
+    // Beer glass body (trapezoid)
     ctx.beginPath();
-    ctx.moveTo(x - w / 2 + 8, y);
-    ctx.lineTo(x + w / 2 - 8, y);
-    ctx.lineTo(x + w / 2, y + h);
-    ctx.lineTo(x - w / 2, y + h);
+    ctx.moveTo(x - GLASS_W / 2 + 8, y);
+    ctx.lineTo(x + GLASS_W / 2 - 8, y);
+    ctx.lineTo(x + GLASS_W / 2, y + GLASS_H);
+    ctx.lineTo(x - GLASS_W / 2, y + GLASS_H);
     ctx.closePath();
 
-    const gradient = ctx.createLinearGradient(x - w / 2, y, x + w / 2, y);
-    gradient.addColorStop(0, '#fbbf24');
-    gradient.addColorStop(0.5, '#f59e0b');
-    gradient.addColorStop(1, '#d97706');
-    ctx.fillStyle = gradient;
+    const grad = ctx.createLinearGradient(x - GLASS_W / 2, y, x + GLASS_W / 2, y);
+    grad.addColorStop(0, '#fbbf24');
+    grad.addColorStop(0.5, '#f59e0b');
+    grad.addColorStop(1, '#d97706');
+    ctx.fillStyle = grad;
     ctx.fill();
 
     // Foam top
     ctx.beginPath();
-    ctx.ellipse(x, y + 5, w / 2 - 6, 6, 0, 0, Math.PI * 2);
+    ctx.ellipse(x, y + 5, GLASS_W / 2 - 6, 6, 0, 0, Math.PI * 2);
     ctx.fillStyle = '#fef3c7';
     ctx.fill();
 
     // Shine
     ctx.beginPath();
-    ctx.moveTo(x - w / 3, y + 10);
-    ctx.lineTo(x - w / 3 + 3, y + h - 8);
+    ctx.moveTo(x - GLASS_W / 3, y + 10);
+    ctx.lineTo(x - GLASS_W / 3 + 3, y + GLASS_H - 8);
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 2;
     ctx.stroke();
   }, []);
 
-  const gameLoop = useCallback(() => {
-    const state = gameStateRef.current;
+  const tick = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const now = Date.now();
-    if (now - lastTimeRef.current >= 1000) {
-      state.timeLeft -= 1;
-      setDisplayTime(state.timeLeft);
-      lastTimeRef.current = now;
+    const s = state.current;
 
-      if (state.timeLeft <= 0) {
+    // Update time every second
+    const now = Date.now();
+    if (now - lastTime.current >= 1000) {
+      s.timeLeft -= 1;
+      setDisplayTime(s.timeLeft);
+      lastTime.current = now;
+
+      if (s.timeLeft <= 0) {
+        isPlaying.current = false;
         setGameStatus('gameover');
         return;
       }
     }
 
     // Move platform
-    state.currentX += PLATFORM_SPEED * state.direction;
-    if (state.currentX >= CANVAS_WIDTH - 40) {
-      state.direction = -1;
-    } else if (state.currentX <= 40) {
-      state.direction = 1;
-    }
+    s.currentX += PLATFORM_SPEED * s.direction;
+    if (s.currentX >= W - 40) s.direction = -1;
+    else if (s.currentX <= 40) s.direction = 1;
 
-    // Drop glass
-    if (state.activeGlass && state.activeGlass.y < PLATFORM_Y - GLASS_HEIGHT) {
-      state.activeGlass.y += GLASS_DROP_SPEED;
+    // Drop active glass
+    if (s.activeGlass && s.activeGlass.y < PLATFORM_Y - GLASS_H) {
+      s.activeGlass.y += DROP_SPEED;
 
-      const stackTop = state.glasses.length > 0
-        ? state.glasses[state.glasses.length - 1].y
-        : PLATFORM_Y - GLASS_HEIGHT;
+      const stackTop = s.glasses.length > 0
+        ? s.glasses[s.glasses.length - 1].y
+        : PLATFORM_Y - GLASS_H;
 
-      if (state.activeGlass.y >= stackTop) {
-        state.activeGlass.y = stackTop;
+      if (s.activeGlass.y >= stackTop) {
+        s.activeGlass.y = stackTop;
 
-        const baseX = state.glasses.length > 0
-          ? state.glasses[state.glasses.length - 1].x
-          : CANVAS_WIDTH / 2;
-
-        const diff = Math.abs(state.activeGlass.x - baseX);
+        const baseX = s.glasses.length > 0 ? s.glasses[s.glasses.length - 1].x : W / 2;
+        const diff = Math.abs(s.activeGlass.x - baseX);
 
         if (diff <= STACK_TOLERANCE) {
-          state.glasses.push({ ...state.activeGlass });
-          state.score += 1;
-          setDisplayScore(state.score);
+          s.glasses.push({ ...s.activeGlass });
+          s.score += 1;
+          setDisplayScore(s.score);
         } else {
+          isPlaying.current = false;
           setGameStatus('gameover');
           return;
         }
 
-        state.activeGlass = null;
-        canDropRef.current = true;
+        s.activeGlass = null;
+        canDrop.current = true;
       }
     }
 
-    // Draw background
+    // Draw
     ctx.fillStyle = '#18181b';
-    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.fillRect(0, 0, W, H);
 
-    // Draw platform
+    // Platform
     ctx.fillStyle = '#52525b';
-    ctx.fillRect(state.currentX - 40, PLATFORM_Y, 80, 12);
+    ctx.fillRect(s.currentX - 40, PLATFORM_Y, 80, 12);
 
-    // Draw guide line
+    // Guide line
     ctx.strokeStyle = '#3f3f46';
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
-    ctx.moveTo(state.currentX, 80);
-    ctx.lineTo(state.currentX, PLATFORM_Y - 10);
+    ctx.moveTo(s.currentX, 80);
+    ctx.lineTo(s.currentX, PLATFORM_Y - 10);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Draw stacked glasses
-    for (const glass of state.glasses) {
-      drawGlass(ctx, glass.x, glass.y);
-    }
+    // Glasses
+    for (const g of s.glasses) drawGlass(ctx, g.x, g.y);
+    if (s.activeGlass) drawGlass(ctx, s.activeGlass.x, s.activeGlass.y);
 
-    // Draw falling glass
-    if (state.activeGlass) {
-      drawGlass(ctx, state.activeGlass.x, state.activeGlass.y);
-    }
-
-    // Draw score
+    // Score
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 28px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${state.score}`, CANVAS_WIDTH / 2, 35);
+    ctx.fillText(`${s.score}`, W / 2, 35);
 
-    // Draw timer
-    ctx.fillStyle = state.timeLeft <= 10 ? '#ef4444' : '#71717a';
+    // Timer
+    ctx.fillStyle = s.timeLeft <= 10 ? '#ef4444' : '#71717a';
     ctx.font = '16px monospace';
-    ctx.fillText(`${state.timeLeft}s`, CANVAS_WIDTH / 2, 58);
+    ctx.fillText(`${s.timeLeft}s`, W / 2, 58);
 
-    if (gameStatus === 'playing') {
-      animationRef.current = requestAnimationFrame(gameLoop);
+    if (isPlaying.current) {
+      rafId.current = requestAnimationFrame(tick);
     }
-  }, [drawGlass, gameStatus]);
+  }, [drawGlass]);
+
+  const startGame = useCallback(() => {
+    if (rafId.current) cancelAnimationFrame(rafId.current);
+
+    const s = state.current;
+    s.glasses = [];
+    s.activeGlass = null;
+    s.score = 0;
+    s.timeLeft = GAME_DURATION;
+    s.currentX = W / 2;
+    s.direction = 1;
+    canDrop.current = true;
+    isPlaying.current = true;
+
+    setDisplayScore(0);
+    setDisplayTime(GAME_DURATION);
+    lastTime.current = Date.now();
+    setGameStatus('playing');
+
+    rafId.current = requestAnimationFrame(tick);
+  }, [tick]);
 
   const dropGlass = useCallback(() => {
-    if (!canDropRef.current || gameStatus !== 'playing') return;
-
-    const state = gameStateRef.current;
-    canDropRef.current = false;
-
-    state.activeGlass = {
-      x: state.currentX,
-      y: 30,
-    };
-  }, [gameStatus]);
+    if (!canDrop.current || !isPlaying.current) return;
+    canDrop.current = false;
+    state.current.activeGlass = { x: state.current.currentX, y: 30 };
+  }, []);
 
   useEffect(() => {
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
+      if (rafId.current) cancelAnimationFrame(rafId.current);
     };
   }, []);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && gameStatus === 'playing') {
+      if (e.code === 'Space' && isPlaying.current) {
         e.preventDefault();
         dropGlass();
       }
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [gameStatus, dropGlass]);
+  }, [dropGlass]);
 
   return (
     <div className="min-h-screen bg-zinc-900 text-white">
@@ -293,9 +252,7 @@ export default function PlayPage() {
         <div className="bg-zinc-800 rounded-2xl p-6 border border-zinc-700">
           {gameStatus === 'idle' ? (
             <div className="text-center py-12">
-              <div className="mb-6">
-                <span className="text-6xl">🍻</span>
-              </div>
+              <div className="mb-6"><span className="text-6xl">🍻</span></div>
               <h2 className="text-xl font-bold mb-2">Ready to Stack?</h2>
               <p className="text-zinc-400 mb-6">Press SPACE or click TAP to drop glasses</p>
               <button
@@ -304,20 +261,20 @@ export default function PlayPage() {
               >
                 <Play className="w-5 h-5" /> START GAME
               </button>
-              <p className="text-xs text-zinc-500 mt-4">Entry fee: 0.2 HKY will be deducted (connect wallet for real play)</p>
+              <p className="text-xs text-zinc-500 mt-4">Entry fee: 0.2 HKY (connect wallet for real play)</p>
             </div>
           ) : gameStatus === 'playing' ? (
             <div className="text-center">
               <div className="mb-4 flex justify-center">
                 <canvas
                   ref={canvasRef}
-                  width={CANVAS_WIDTH}
-                  height={CANVAS_HEIGHT}
+                  width={W}
+                  height={H}
                   className="rounded-xl border-2 border-zinc-600 cursor-pointer"
                   onClick={dropGlass}
                 />
               </div>
-              <p className="text-zinc-400 text-sm mb-4">Press SPACE or click canvas to drop glass</p>
+              <p className="text-zinc-400 text-sm mb-4">Press SPACE or click canvas to drop</p>
               <div className="flex justify-center gap-6">
                 <div className="bg-zinc-700 px-6 py-3 rounded-xl">
                   <span className="text-zinc-400 text-sm">Score: </span>
@@ -337,7 +294,7 @@ export default function PlayPage() {
               </h2>
               <p className="text-4xl font-bold text-green-400 mb-2">{displayScore} glasses</p>
               <p className="text-zinc-400 mb-6">
-                {displayScore >= 10 ? 'You might be in the leaderboard!' : 'Try again to get a higher score!'}
+                {displayScore >= 10 ? 'You might be in the leaderboard!' : 'Try again!'}
               </p>
               <div className="flex justify-center gap-4">
                 <button
@@ -365,8 +322,8 @@ export default function PlayPage() {
             <p>• Your highest score per tournament is counted</p>
             <p>• Winners can claim prizes after tournament ends</p>
           </div>
-          <div className="mt-3 flex gap-2">
-            <Link href="/leaderboard" className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-1">
+          <div className="mt-3">
+            <Link href="/leaderboard" className="text-blue-400 hover:text-blue-300 text-sm">
               View Leaderboard →
             </Link>
           </div>
