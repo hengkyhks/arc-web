@@ -24,6 +24,9 @@ const arcTestnet = {
   testnet: true,
 } as const;
 
+// WalletConnect project ID - required for RainbowKit v2
+const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || 'df15ae952c4d54dc40bc2103d3bf1fae';
+
 // Only include MetaMask to avoid conflict
 const connectors = connectorsForWallets(
   [
@@ -32,7 +35,11 @@ const connectors = connectorsForWallets(
       wallets: [metaMaskWallet],
     },
   ],
-  { chains: [arcTestnet] }
+  {
+    chains: [arcTestnet],
+    appName: 'Arc Web',
+    projectId: projectId,
+  }
 );
 
 // Create config with default connectors
