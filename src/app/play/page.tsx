@@ -5,23 +5,21 @@ import Link from 'next/link';
 import { Coins, Trophy, Clock, Play, RotateCcw, Wallet } from 'lucide-react';
 
 const GAME_DURATION = 60;
-const GLASS_W = 50;
-const GLASS_H = 55;
-const BASE_TOLERANCE = 20;
+const GLASS_W = 48;
+const GLASS_H = 54;
+const ALIGN_TOLERANCE = 22;
 
 const W = 400;
 const H = 650;
 const PLATFORM_Y = 620;
-const PLATFORM_SPEED = 2.5;
-const DROP_SPEED = 8;
-const GRAVITY = 0.15;
-const FRICTION = 0.92;
+const PLATFORM_SPEED = 3.5;
+const DROP_SPEED = 14;
 
 interface Glass {
   x: number;
   y: number;
-  angle: number;
-  settled: boolean;
+  falling: boolean;
+  vx: number;
   vy: number;
 }
 
@@ -32,122 +30,129 @@ export default function PlayPage() {
   const [gameStatus, setGameStatus] = useState<'idle' | 'playing' | 'gameover'>('idle');
   const [highScore, setHighScore] = useState(0);
 
-  const gameState = useRef({
+  const game = useRef({
     glasses: [] as Glass[],
-    activeGlass: null as { x: number; y: number; vx: number; vy: number; angle: number } | null,
+    activeGlass: null as { x: number; y: number } | null,
     score: 0,
     timeLeft: GAME_DURATION,
     platformX: W / 2,
     direction: 1,
-    isDropping: false,
   });
 
   const canDrop = useRef(true);
   const rafId = useRef<number>(0);
   const lastTime = useRef(Date.now());
   const isPlaying = useRef(false);
-  const gameOver = useRef(false);
+  const gameEnded = useRef(false);
+  const isCollapsing = useRef(false);
 
-  const drawGlass = (ctx: CanvasRenderingContext2D, x: number, y: number, angle: number) => {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-
-    // Glass body (beer mug shape)
+  const drawGlass = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
     const w = GLASS_W;
     const h = GLASS_H;
 
-    // Body
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.beginPath();
-    ctx.moveTo(-w / 2 + 5, 0);
-    ctx.lineTo(w / 2 - 5, 0);
-    ctx.lineTo(w / 2 + 2, h);
-    ctx.lineTo(-w / 2 - 2, h);
+    ctx.ellipse(x, y + h + 2, w / 2 + 3, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Glass body (straight sides for stacking)
+    ctx.beginPath();
+    ctx.moveTo(x - w / 2, y);
+    ctx.lineTo(x + w / 2, y);
+    ctx.lineTo(x + w / 2, y + h);
+    ctx.lineTo(x - w / 2, y + h);
     ctx.closePath();
 
-    const grad = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
-    grad.addColorStop(0, '#fbbf24');
-    grad.addColorStop(0.5, '#f59e0b');
-    grad.addColorStop(1, '#d97706');
+    const grad = ctx.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+    grad.addColorStop(0, '#dd9f20');
+    grad.addColorStop(0.4, '#f5c542');
+    grad.addColorStop(0.6, '#f5c542');
+    grad.addColorStop(1, '#c9921f');
     ctx.fillStyle = grad;
     ctx.fill();
 
     // Beer liquid
-    ctx.fillStyle = 'rgba(180, 120, 0, 0.6)';
-    ctx.fillRect(-w / 2 + 4, h * 0.3, w - 8, h * 0.6);
+    ctx.fillStyle = 'rgba(150, 90, 0, 0.65)';
+    ctx.fillRect(x - w / 2 + 3, y + h * 0.28, w - 6, h * 0.6);
 
     // Foam top
     ctx.beginPath();
-    ctx.ellipse(0, 0, w / 2 - 3, 7, 0, 0, Math.PI * 2);
-    ctx.fillStyle = '#fef3c7';
+    ctx.ellipse(x, y + 2, w / 2 - 2, 5, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#fffce8';
     ctx.fill();
 
-    // Handle
-    ctx.strokeStyle = '#d97706';
-    ctx.lineWidth = 4;
+    // Foam texture
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
     ctx.beginPath();
-    ctx.arc(w / 2 + 6, h * 0.4, 8, -Math.PI * 0.4, Math.PI * 0.4);
-    ctx.stroke();
+    ctx.arc(x - 7, y + 1, 1.5, 0, Math.PI * 2);
+    ctx.arc(x + 6, y, 1.2, 0, Math.PI * 2);
+    ctx.arc(x + 12, y + 2, 0.8, 0, Math.PI * 2);
+    ctx.fill();
 
-    // Shine
+    // Glass shine
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.fillRect(x - w / 2 + 5, y + 6, 3, h - 14);
+
+    // Rim line
+    ctx.strokeStyle = 'rgba(255,220,80,0.4)';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(-w / 3, 5);
-    ctx.lineTo(-w / 3 + 3, h - 5);
-    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-    ctx.lineWidth = 2;
+    ctx.moveTo(x - w / 2, y);
+    ctx.lineTo(x + w / 2, y);
     ctx.stroke();
-
-    ctx.restore();
   };
 
-  const calculateTowerAngle = (glasses: Glass[]): number => {
-    if (glasses.length < 2) return 0;
+  const triggerCollapse = useCallback((glasses: Glass[]) => {
+    isCollapsing.current = true;
 
-    let totalAngle = 0;
-    for (const g of glasses) {
-      totalAngle += g.angle;
-    }
-    return totalAngle / glasses.length;
-  };
+    glasses.forEach(g => {
+      g.falling = true;
+      g.vx = (Math.random() - 0.5) * 6;
+      g.vy = -Math.random() * 4 - 2;
+    });
 
-  const checkCollapse = (glasses: Glass[], newGlass: Glass): boolean => {
-    if (glasses.length === 0) return false;
+    const collapseTick = () => {
+      const ctx = canvasRef.current?.getContext('2d');
+      if (!ctx) return;
 
-    const topGlass = glasses[glasses.length - 1];
-    const combinedAngle = Math.abs(topGlass.angle) + Math.abs(newGlass.angle);
+      let stillFalling = false;
 
-    // Higher stack = more likely to collapse
-    // Each glass adds instability
-    const heightPenalty = glasses.length * 3;
-    const maxStableAngle = Math.max(15, 35 - heightPenalty);
+      for (const g of glasses) {
+        if (!g.falling) continue;
 
-    // Check if new glass would make tower too tilted
-    const avgAngle = (topGlass.angle + newGlass.angle) / 2;
-    if (Math.abs(avgAngle) > maxStableAngle) return true;
+        g.vy += 0.4;
+        g.x += g.vx;
+        g.y += g.vy;
+        g.vx *= 0.99;
 
-    // Check center of mass - if new glass is too far from center
-    const stackTop = glasses[glasses.length - 1];
-    const dx = Math.abs(newGlass.x - stackGlass.x);
-    if (dx > BASE_TOLERANCE + (glasses.length * 2)) return true;
+        if (g.y < H + 200) stillFalling = true;
+      }
 
-    return false;
-  };
+      // Draw
+      ctx.fillStyle = '#121218';
+      ctx.fillRect(0, 0, W, H);
 
-  const checkCollapseSimple = (glasses: Glass[]): boolean => {
-    if (glasses.length < 2) return false;
+      ctx.fillStyle = '#3d3d4a';
+      ctx.fillRect(20, PLATFORM_Y, W - 40, 20);
 
-    // Calculate average angle of tower
-    let avgAngle = 0;
-    for (const g of glasses) {
-      avgAngle += g.angle;
-    }
-    avgAngle /= glasses.length;
+      for (const g of glasses) {
+        if (g.y < H + 100) drawGlass(ctx, g.x, g.y);
+      }
 
-    // Higher stack = less stable
-    const maxStable = Math.max(8, 25 - glasses.length * 2.5);
+      if (stillFalling && isCollapsing.current) {
+        requestAnimationFrame(collapseTick);
+      } else {
+        isCollapsing.current = false;
+        isPlaying.current = false;
+        gameEnded.current = true;
+        if (game.current.score > highScore) setHighScore(game.current.score);
+        setGameStatus('gameover');
+      }
+    };
 
-    return Math.abs(avgAngle) > maxStable;
-  };
+    requestAnimationFrame(collapseTick);
+  }, [highScore]);
 
   const tick = useCallback(() => {
     const canvas = canvasRef.current;
@@ -155,203 +160,146 @@ export default function PlayPage() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const s = gameState.current;
+    const g = game.current;
 
-    if (gameOver.current) return;
+    if (gameEnded.current || isCollapsing.current) return;
 
-    // Update time
+    // Time
     const now = Date.now();
     if (now - lastTime.current >= 1000) {
-      s.timeLeft -= 1;
-      setDisplayTime(s.timeLeft);
+      g.timeLeft -= 1;
+      setDisplayTime(g.timeLeft);
       lastTime.current = now;
 
-      if (s.timeLeft <= 0) {
-        gameOver.current = true;
+      if (g.timeLeft <= 0) {
+        gameEnded.current = true;
         isPlaying.current = false;
-        if (s.score > highScore) setHighScore(s.score);
+        if (g.score > highScore) setHighScore(g.score);
         setGameStatus('gameover');
         return;
       }
     }
 
     // Move platform
-    s.platformX += PLATFORM_SPEED * s.direction;
-    if (s.platformX >= W - 50) s.direction = -1;
-    else if (s.platformX <= 50) s.direction = 1;
+    g.platformX += PLATFORM_SPEED * g.direction;
+    if (g.platformX >= W - 40) g.direction = -1;
+    else if (g.platformX <= 40) g.direction = 1;
 
     // Drop active glass
-    if (s.activeGlass && !s.isDropping) {
-      s.activeGlass.vy += GRAVITY;
-      s.activeGlass.y += s.activeGlass.vy;
-      s.activeGlass.x += s.activeGlass.vx;
-      s.activeGlass.vx *= FRICTION;
+    if (g.activeGlass) {
+      g.activeGlass.y += DROP_SPEED;
 
-      // Constrain to canvas
-      if (s.activeGlass.x < GLASS_W) s.activeGlass.x = GLASS_W;
-      if (s.activeGlass.x > W - GLASS_W) s.activeGlass.x = W - GLASS_W;
-
-      const stackTop = s.glasses.length > 0
-        ? s.glasses[s.glasses.length - 1].y
+      const stackTop = g.glasses.length > 0
+        ? g.glasses[g.glasses.length - 1].y
         : PLATFORM_Y - GLASS_H;
 
-      // Check landing
-      if (s.activeGlass.y >= stackTop) {
-        s.activeGlass.y = stackTop;
+      if (g.activeGlass.y >= stackTop) {
+        const prevX = g.glasses.length > 0 ? g.glasses[g.glasses.length - 1].x : g.activeGlass.x;
+        const diff = Math.abs(g.activeGlass.x - prevX);
 
-        const prevGlass = s.glasses.length > 0 ? s.glasses[s.glasses.length - 1] : null;
-
-        if (prevGlass) {
-          // Calculate where this glass lands relative to previous
-          const dx = s.activeGlass.x - prevGlass.x;
-          const baseTolerance = BASE_TOLERANCE + (s.glasses.length * 1.5);
-
-          // Physics-based angle based on offset
-          const normalizedOffset = dx / GLASS_W;
-          const newAngle = prevGlass.angle + (normalizedOffset * 0.15);
-
-          // Check if collapsed
-          if (Math.abs(newAngle) > 12 + (s.glasses.length * 2)) {
-            // Tower collapses!
-            gameOver.current = true;
-            isPlaying.current = false;
-            if (s.score > highScore) setHighScore(s.score);
-            setGameStatus('gameover');
-
-            // Animate collapse
-            s.glasses.forEach(g => {
-              g.vy = Math.random() * 3 + 2;
-              g.vx = (Math.random() - 0.5) * 4;
-            });
-            s.activeGlass = null;
-          } else {
-            s.glasses.push({
-              x: s.activeGlass.x,
-              y: stackTop,
-              angle: newAngle,
-              settled: true,
-              vy: 0,
-            });
-            s.score += 1;
-            setDisplayScore(s.score);
-            s.activeGlass = null;
-            canDrop.current = true;
-          }
-        } else {
-          // First glass
-          s.glasses.push({
-            x: s.activeGlass.x,
-            y: stackTop,
-            angle: 0,
-            settled: true,
-            vy: 0,
-          });
-          s.score += 1;
-          setDisplayScore(s.score);
-          s.activeGlass = null;
-          canDrop.current = true;
+        if (diff > ALIGN_TOLERANCE) {
+          // Miss! Trigger collapse
+          g.activeGlass = null;
+          triggerCollapse(g.glasses);
+          return;
         }
+
+        // Stack it
+        g.glasses.push({ x: g.activeGlass.x, y: stackTop, falling: false, vx: 0, vy: 0 });
+        g.score += 1;
+        setDisplayScore(g.score);
+        g.activeGlass = null;
+        canDrop.current = true;
       }
     }
-
-    // Animate falling glasses (collapse animation)
-    for (const g of s.glasses) {
-      if (g.vy !== undefined && g.vy > 0) {
-        g.vy += GRAVITY;
-        g.y += g.vy;
-        g.x += g.vx;
-        g.vx *= 0.98;
-        g.angle += g.vx * 0.05;
-      }
-    }
-
-    // Remove glasses that fell off screen
-    s.glasses = s.glasses.filter(g => g.y < H + 100);
 
     // Draw
-    ctx.fillStyle = '#0f0f0f';
+    ctx.fillStyle = '#121218';
     ctx.fillRect(0, 0, W, H);
 
-    // Background pattern
-    ctx.fillStyle = '#1a1a1a';
-    for (let i = 0; i < W; i += 20) {
-      ctx.fillRect(i, 0, 1, H);
+    // Grid lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.025)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 30) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
-    for (let i = 0; i < H; i += 20) {
-      ctx.fillRect(0, i, W, 1);
+    for (let y = 0; y < H; y += 30) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
     }
 
-    // Platform / table
-    ctx.fillStyle = '#44403c';
-    ctx.fillRect(30, PLATFORM_Y, W - 60, 15);
-    ctx.fillStyle = '#78716c';
-    ctx.fillRect(30, PLATFORM_Y, W - 60, 4);
+    // Platform base
+    ctx.fillStyle = '#3d3d4a';
+    ctx.fillRect(20, PLATFORM_Y, W - 40, 20);
+    ctx.fillStyle = '#52525b';
+    ctx.fillRect(20, PLATFORM_Y, W - 40, 5);
 
-    // Draw stacked glasses
-    for (const g of s.glasses) {
-      drawGlass(ctx, g.x, g.y, g.angle);
+    // Moving platform indicator
+    ctx.fillStyle = '#f5c542';
+    ctx.fillRect(g.platformX - 22, PLATFORM_Y - 3, 44, 3);
+
+    // Draw glasses (bottom to top)
+    for (let i = 0; i < g.glasses.length; i++) {
+      drawGlass(ctx, g.glasses[i].x, g.glasses[i].y);
     }
 
     // Draw falling glass
-    if (s.activeGlass) {
-      drawGlass(ctx, s.activeGlass.x, s.activeGlass.y, 0);
+    if (g.activeGlass) {
+      // Target indicator
+      ctx.fillStyle = 'rgba(245,197,66,0.15)';
+      ctx.beginPath();
+      ctx.arc(g.platformX, PLATFORM_Y - GLASS_H - 5, ALIGN_TOLERANCE, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(245,197,66,0.4)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      drawGlass(ctx, g.activeGlass.x, g.activeGlass.y);
     }
 
-    // Draw platform indicator
-    ctx.fillStyle = 'rgba(255,200,100,0.3)';
-    ctx.fillRect(s.platformX - 25, 60, 50, 3);
-
-    // Guide line
-    ctx.strokeStyle = 'rgba(255,200,100,0.2)';
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(s.platformX, 80);
-    ctx.lineTo(s.platformX, PLATFORM_Y - 10);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Score UI
+    // UI
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 32px monospace';
+    ctx.font = 'bold 36px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${s.score}`, W / 2, 40);
+    ctx.fillText(`${g.score}`, W / 2, 42);
 
-    // Timer
-    ctx.fillStyle = s.timeLeft <= 10 ? '#ef4444' : '#a1a1aa';
-    ctx.font = '18px monospace';
-    ctx.fillText(`${s.timeLeft}s`, W / 2, 65);
+    ctx.fillStyle = g.timeLeft <= 10 ? '#ef4444' : '#71717a';
+    ctx.font = '16px monospace';
+    ctx.fillText(`${g.timeLeft}s`, W / 2, 68);
 
-    // Stability indicator
-    if (s.glasses.length > 1) {
-      const angle = calculateTowerAngle(s.glasses);
-      const maxStable = Math.max(8, 25 - s.glasses.length * 2.5);
-      const stabilityPct = Math.max(0, 100 - (Math.abs(angle) / maxStable) * 100);
-
-      ctx.fillStyle = stabilityPct > 50 ? '#22c55e' : stabilityPct > 25 ? '#eab308' : '#ef4444';
-      ctx.font = '12px monospace';
+    if (highScore > 0) {
+      ctx.fillStyle = '#a78bfa';
+      ctx.font = '14px monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(`Stability: ${Math.round(stabilityPct)}%`, W - 20, 40);
+      ctx.fillText(`Best: ${highScore}`, W - 20, 40);
+    }
+
+    // Height indicator
+    if (g.glasses.length >= 3) {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '12px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`Height: ${g.glasses.length}`, W / 2, H - 15);
     }
 
     if (isPlaying.current) {
       rafId.current = requestAnimationFrame(tick);
     }
-  }, []);
+  }, [highScore, triggerCollapse]);
 
   const startGame = useCallback(() => {
     if (rafId.current) cancelAnimationFrame(rafId.current);
 
-    const s = gameState.current;
-    s.glasses = [];
-    s.activeGlass = null;
-    s.score = 0;
-    s.timeLeft = GAME_DURATION;
-    s.platformX = W / 2;
-    s.direction = 1;
-    s.isDropping = false;
+    const g = game.current;
+    g.glasses = [];
+    g.activeGlass = null;
+    g.score = 0;
+    g.timeLeft = GAME_DURATION;
+    g.platformX = W / 2;
+    g.direction = 1;
     canDrop.current = true;
     isPlaying.current = true;
-    gameOver.current = false;
+    gameEnded.current = false;
+    isCollapsing.current = false;
 
     setDisplayScore(0);
     setDisplayTime(GAME_DURATION);
@@ -362,29 +310,14 @@ export default function PlayPage() {
   }, [tick]);
 
   const dropGlass = useCallback(() => {
-    if (!canDrop.current || !isPlaying.current || gameOver.current) return;
-
-    const s = gameState.current;
-    if (s.activeGlass) return; // Already dropping
+    if (!canDrop.current || !isPlaying.current || gameEnded.current || isCollapsing.current) return;
+    if (game.current.activeGlass) return;
 
     canDrop.current = false;
-    s.isDropping = true;
-
-    // Add slight randomness to drop position
-    const randomOffset = (Math.random() - 0.5) * 20;
-    const dropX = s.platformX + randomOffset;
-
-    s.activeGlass = {
-      x: dropX,
-      y: 50,
-      vx: 0,
-      vy: 0,
-      angle: 0,
+    game.current.activeGlass = {
+      x: game.current.platformX,
+      y: 40,
     };
-
-    setTimeout(() => {
-      s.isDropping = false;
-    }, 100);
   }, []);
 
   useEffect(() => {
@@ -395,7 +328,7 @@ export default function PlayPage() {
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && isPlaying.current && !gameOver.current) {
+      if (e.code === 'Space' && isPlaying.current && !gameEnded.current && !isCollapsing.current) {
         e.preventDefault();
         dropGlass();
       }
@@ -423,7 +356,7 @@ export default function PlayPage() {
       <div className="max-w-4xl mx-auto px-4 py-6">
         <div className="text-center mb-4">
           <h1 className="text-2xl font-bold">🍺 Beer Stack</h1>
-          <p className="text-zinc-400 text-sm">Stack glasses — higher = more unstable!</p>
+          <p className="text-zinc-400 text-sm">Stack glasses perfectly — miss and the tower collapses!</p>
         </div>
 
         <div className="grid grid-cols-4 gap-3 mb-4">
@@ -452,12 +385,10 @@ export default function PlayPage() {
         <div className="bg-zinc-900 rounded-2xl p-4 border border-zinc-700">
           {gameStatus === 'idle' ? (
             <div className="text-center py-16">
-              <div className="mb-6">
-                <span className="text-7xl">🍻</span>
-              </div>
+              <div className="mb-6"><span className="text-7xl">🍻</span></div>
               <h2 className="text-2xl font-bold mb-2">Ready to Stack?</h2>
-              <p className="text-zinc-400 mb-2">Click or press SPACE to drop glasses</p>
-              <p className="text-zinc-500 text-sm mb-6">Higher stack = more unstable!</p>
+              <p className="text-zinc-400 mb-2">Click or press SPACE to drop</p>
+              <p className="text-zinc-500 text-sm mb-6">Land within the target circle to stack!</p>
               <button
                 onClick={startGame}
                 className="px-10 py-4 bg-green-600 hover:bg-green-500 font-bold rounded-xl transition-colors flex items-center gap-2 mx-auto text-lg"
@@ -477,16 +408,14 @@ export default function PlayPage() {
                   onClick={dropGlass}
                 />
               </div>
-              <p className="text-zinc-500 text-sm">Click or SPACE to drop</p>
+              <p className="text-zinc-500 text-sm">SPACE or click to drop — aim for the target!</p>
             </div>
           ) : (
             <div className="text-center py-12">
               <div className="mb-4 text-5xl">{displayScore >= 5 ? '🏆' : '💥'}</div>
               <h2 className="text-2xl font-bold mb-1">Game Over!</h2>
               <p className="text-4xl font-bold text-green-400 mb-2">{displayScore} glasses</p>
-              {highScore > 0 && (
-                <p className="text-zinc-400 text-sm mb-4">Best: {highScore}</p>
-              )}
+              {highScore > 0 && <p className="text-zinc-400 text-sm mb-4">Best: {highScore}</p>}
               <div className="flex justify-center gap-3 mt-6">
                 <button
                   onClick={startGame}
