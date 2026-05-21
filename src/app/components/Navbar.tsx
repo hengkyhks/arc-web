@@ -3,12 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ConnectButton } from '../providers';
-import { Home, Fuel, Mail, Palette, Puzzle } from 'lucide-react';
+import { Home, Fuel, Mail, Palette, Puzzle, Trophy, Gamepad2 } from 'lucide-react';
 
 const navItems = [
   { href: '/', label: 'Home', Icon: Home },
   { href: '/gas', label: 'Gas Tracker', Icon: Fuel },
   { href: '/send', label: 'Multisend', Icon: Mail },
+  { href: '/play', label: 'Beer Stack', Icon: Gamepad2 },
+  { href: '/leaderboard', label: 'Leaderboard', Icon: Trophy },
   { href: '/mint', label: 'NFT Minter', Icon: Palette },
 ];
 
